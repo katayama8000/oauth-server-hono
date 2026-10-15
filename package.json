@@ -1,0 +1,33 @@
+{
+  "name": "oauth-server-hono",
+  "version": "1.0.0",
+  "description": "Practice OAuth 2.0 authorization server built with Hono (in-memory store)",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.11.2",
+      "onFail": "download"
+    }
+  },
+  "packageManager": "pnpm@12.11.2",
+  "type": "module",
+  "dependencies": {
+    "@hono/node-server": "^2.1.5",
+    "hono": "^4.13.13"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.4"
+  }
+}
