@@ -1,4 +1,5 @@
 import type { Child } from 'hono/jsx'
+import { ISSUER } from './oauth.js'
 import type { Client } from './store.js'
 
 const Layout = (props: { title: string; children: Child }) => (
@@ -54,11 +55,11 @@ export const LoginPage = (props: {
       )}
       <label>
         ユーザー名
-        <input name="username" autocomplete="username" required />
+        <input name="username" value="alice" autocomplete="username" required />
       </label>
       <label>
         パスワード
-        <input name="password" type="password" autocomplete="current-password" required />
+        <input name="password" value="password" type="password" autocomplete="current-password" required />
       </label>
       <button type="submit" name="decision" value="approve">
         許可する
@@ -68,7 +69,7 @@ export const LoginPage = (props: {
       </button>
     </form>
     <p>
-      <small>テストユーザー: alice / password, bob / password</small>
+      <small>テストユーザー: alice / password, bob / password（練習用に alice を入力済み）</small>
     </p>
   </Layout>
 )
@@ -87,13 +88,16 @@ export const CallbackPage = (props: { query: Record<string, string> }) => (
     <pre>{JSON.stringify(props.query, null, 2)}</pre>
     {props.query.code && (
       <>
-        <p>トークンに交換する（$VERIFIER は認可リクエスト時に作った code_verifier）:</p>
-        <pre>{`curl -s -X POST http://localhost:3000/token \\
-  -u demo-client:demo-secret \\
-  -d grant_type=authorization_code \\
-  -d code=${props.query.code} \\
-  -d redirect_uri=http://localhost:3000/demo/callback \\
-  -d code_verifier=$VERIFIER`}</pre>
+        <p>
+          ↓ をコピーして、認可 URL を作ったのと同じターミナルに貼り付ける（README の手順 3）:
+        </p>
+        <pre>{`CODE=${props.query.code}
+TOKENS=$(curl -s -X POST ${ISSUER}/token -u demo-client:demo-secret \\
+  -d grant_type=authorization_code -d code=$CODE \\
+  -d redirect_uri=${ISSUER}/demo/callback -d code_verifier=$VERIFIER)
+echo "$TOKENS"
+ACCESS_TOKEN=$(echo "$TOKENS" | json access_token)
+REFRESH_TOKEN=$(echo "$TOKENS" | json refresh_token)`}</pre>
       </>
     )}
   </Layout>

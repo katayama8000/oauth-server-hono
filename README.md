@@ -8,6 +8,9 @@ pnpm dev      # http://localhost:3000
 pnpm test     # 結合テスト
 ```
 
+> 3000 番が使用中なら 3001, 3002, ... と空いているポートを自動で使う（`PORT=4000 pnpm dev` で開始番号を変更可）。
+> issuer や demo の redirect_uri も実際のポートに合わせて変わる。実際のポートは起動ログ `OAuth server listening on http://localhost:XXXX` で確認できる。
+
 ---
 
 ## OAuth 2.0 ってなに？
@@ -244,53 +247,107 @@ sequenceDiagram
 | ユーザー | `alice` | `password` | — |
 | ユーザー | `bob` | `password` | — |
 
-redirect_uri はどちらのクライアントも `http://localhost:3000/demo/callback`。
+redirect_uri はどちらのクライアントも `<サーバーのURL>/demo/callback`（例: `http://localhost:3000/demo/callback`）。
 
 ---
 
 ## 手で試す
 
-### Authorization Code + PKCE
+コードブロックを**上から順に、同じターミナルにそのまま貼り付ければ動く**ようにしてある。
+値（code やトークン）はシェル変数に入れて次のステップに引き継ぐので、手で書き換える場所はない。
+
+### 0. 準備
+
+```sh
+# サーバーの URL（起動ログのポートが 3000 以外ならここだけ変える）
+BASE=http://localhost:3000
+
+# JSON から値を取り出す小さな関数（jq の代わり）
+json() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)[process.argv[1]]))' "$1"; }
+
+# サーバーが動いているか確認（JSON が出れば OK）
+curl -s $BASE/.well-known/oauth-authorization-server
+```
+
+### 1. Authorization Code + PKCE
 
 ```sh
 # 1. PKCE の code_verifier と code_challenge を作る
 VERIFIER=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
 CHALLENGE=$(printf %s "$VERIFIER" | openssl dgst -sha256 -binary | openssl base64 | tr '+/' '-_' | tr -d '=')
 
-# 2. 出力された URL をブラウザで開いてログイン（alice / password）
-#    → /demo/callback に code が表示される
-echo "http://localhost:3000/authorize?response_type=code&client_id=demo-client&redirect_uri=http://localhost:3000/demo/callback&scope=profile%20email&state=abc&code_challenge=$CHALLENGE&code_challenge_method=S256"
+# 2. 認可 URL を作る → 出てきた URL をブラウザで開いてログイン（alice / password）
+echo "$BASE/authorize?response_type=code&client_id=demo-client&redirect_uri=$BASE/demo/callback&scope=profile%20email&state=abc&code_challenge=$CHALLENGE&code_challenge_method=S256"
+```
 
-# 3. code をトークンに交換（同じターミナルで。$VERIFIER を使うため）
-curl -s -X POST http://localhost:3000/token -u demo-client:demo-secret \
-  -d grant_type=authorization_code -d code=<CODE> \
-  -d redirect_uri=http://localhost:3000/demo/callback -d code_verifier=$VERIFIER
+ログインして「許可する」を押すと `/demo/callback` に飛び、**code が埋め込まれたコマンド**が表示される。
+それをコピーして貼り付ける（中身は次と同じ。`CODE=` の値だけ毎回違う）:
 
+```sh
+# 3. code をトークンに交換し、トークンを変数に保存
+CODE=_WuLHH-biu0l6yW2fdhufCJK9yHwRdl9LI2coLCVvs4   # ← 例。画面に表示された自分の値を使う
+TOKENS=$(curl -s -X POST $BASE/token -u demo-client:demo-secret \
+  -d grant_type=authorization_code -d code=$CODE \
+  -d redirect_uri=$BASE/demo/callback -d code_verifier=$VERIFIER)
+echo "$TOKENS"
+ACCESS_TOKEN=$(echo "$TOKENS" | json access_token)
+REFRESH_TOKEN=$(echo "$TOKENS" | json refresh_token)
+```
+
+```sh
 # 4. 保護リソースにアクセス
-curl -s http://localhost:3000/userinfo -H "Authorization: Bearer <ACCESS_TOKEN>"
+curl -s $BASE/userinfo -H "Authorization: Bearer $ACCESS_TOKEN"; echo
 ```
 
-### Refresh Token
+> 💡 ブラウザを使わずに 1〜3 を一気にやるなら（ログインフォームの POST を curl で再現する）:
+>
+> ```sh
+> VERIFIER=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
+> CHALLENGE=$(printf %s "$VERIFIER" | openssl dgst -sha256 -binary | openssl base64 | tr '+/' '-_' | tr -d '=')
+> LOCATION=$(curl -s -o /dev/null -w '%{redirect_url}' -X POST $BASE/authorize -H "Origin: $BASE" \
+>   -d response_type=code -d client_id=demo-client -d redirect_uri=$BASE/demo/callback \
+>   -d scope='profile email' -d state=abc -d code_challenge=$CHALLENGE -d code_challenge_method=S256 \
+>   -d username=alice -d password=password -d decision=approve)
+> echo "$LOCATION"
+> CODE=$(echo "$LOCATION" | sed -E 's/.*[?&]code=([^&]+).*/\1/')
+> TOKENS=$(curl -s -X POST $BASE/token -u demo-client:demo-secret \
+>   -d grant_type=authorization_code -d code=$CODE \
+>   -d redirect_uri=$BASE/demo/callback -d code_verifier=$VERIFIER)
+> echo "$TOKENS"
+> ACCESS_TOKEN=$(echo "$TOKENS" | json access_token)
+> REFRESH_TOKEN=$(echo "$TOKENS" | json refresh_token)
+> ```
+
+### 2. Refresh Token
 
 ```sh
-curl -s -X POST http://localhost:3000/token -u demo-client:demo-secret \
-  -d grant_type=refresh_token -d refresh_token=<REFRESH_TOKEN>
+# 新しいトークンで変数を上書きする（古い refresh token はもう使えない）
+TOKENS=$(curl -s -X POST $BASE/token -u demo-client:demo-secret \
+  -d grant_type=refresh_token -d refresh_token=$REFRESH_TOKEN)
+echo "$TOKENS"
+ACCESS_TOKEN=$(echo "$TOKENS" | json access_token)
+REFRESH_TOKEN=$(echo "$TOKENS" | json refresh_token)
 ```
 
-### Client Credentials
+### 3. Introspection / Revocation
 
 ```sh
-curl -s -X POST http://localhost:3000/token -u demo-client:demo-secret \
-  -d grant_type=client_credentials -d scope=api:read
+# トークンの状態を確認 → "active": true
+curl -s -X POST $BASE/introspect -u demo-client:demo-secret -d token=$ACCESS_TOKEN; echo
 
-curl -s http://localhost:3000/api/data -H "Authorization: Bearer <ACCESS_TOKEN>"
+# refresh token を失効させる（同じ grant の access token も一緒に失効する）
+curl -s -X POST $BASE/revoke -u demo-client:demo-secret -d token=$REFRESH_TOKEN
+
+# もう一度確認 → "active": false
+curl -s -X POST $BASE/introspect -u demo-client:demo-secret -d token=$ACCESS_TOKEN; echo
 ```
 
-### Introspection / Revocation
+### 4. Client Credentials
 
 ```sh
-curl -s -X POST http://localhost:3000/introspect -u demo-client:demo-secret -d token=<TOKEN>
-curl -s -X POST http://localhost:3000/revoke     -u demo-client:demo-secret -d token=<TOKEN>
+CC_TOKEN=$(curl -s -X POST $BASE/token -u demo-client:demo-secret \
+  -d grant_type=client_credentials -d scope=api:read | json access_token)
+curl -s $BASE/api/data -H "Authorization: Bearer $CC_TOKEN"; echo
 ```
 
 ---
