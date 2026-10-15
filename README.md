@@ -371,6 +371,65 @@ test/
 └── oauth.test.ts                # フロー全体の結合テスト
 ```
 
+## コードリーディングの順番
+
+「データ → 共通部品 → フローの順にエンドポイント」の順で読むと迷いにくい。
+フロー 1 の図と見比べながら、リクエストがどの関数を通るかを追いかけるのがおすすめ。
+
+```mermaid
+flowchart LR
+  subgraph S1["Step 1: 土台"]
+    A[store.ts] --> B[crypto.ts] --> C[oauth.ts]
+  end
+  subgraph S2["Step 2: 入口"]
+    D[app.tsx]
+  end
+  subgraph S3["Step 3: フロー順に"]
+    E[authorize.tsx<br/>+ views.tsx] --> F[token.ts] --> G[resource.ts] --> H[tokens-management.ts]
+  end
+  subgraph S4["Step 4: 仕上げ"]
+    I[index.ts] --> J[oauth.test.ts]
+  end
+  S1 --> S2 --> S3 --> S4
+```
+
+### Step 1: 土台（データと共通部品）
+
+| # | ファイル | 見るところ | 読みながら考えること |
+| --- | --- | --- | --- |
+| 1 | `src/store.ts` | `Client` / `User` / `AuthorizationCode` / `AccessToken` / `RefreshToken` の型、`seed()` | 各データが何を持っているか。**`grantId` は何のためにある？**（→ `revokeGrant()`） |
+| 2 | `src/crypto.ts` | `randomToken()`, `verifyPkce()`, `safeEqual()` | PKCE の検証は「ハッシュして比べるだけ」なのを確認。なぜ `===` ではなく `timingSafeEqual` を使う？ |
+| 3 | `src/oauth.ts` | `authenticateClient()`, `oauthError()` | Basic 認証とボディの 2 通りでクライアントを認証する流れ。public クライアントはどう扱われる？ |
+
+### Step 2: 入口
+
+| # | ファイル | 見るところ | 読みながら考えること |
+| --- | --- | --- | --- |
+| 4 | `src/app.tsx` | `app.route(...)` と `/.well-known/oauth-authorization-server` | どの URL がどのファイルに対応するかの地図。メタデータに書いてある内容が実装と一致しているか |
+
+### Step 3: フローの順にエンドポイントを読む
+
+| # | ファイル | 見るところ | 読みながら考えること |
+| --- | --- | --- | --- |
+| 5 | `src/routes/authorize.tsx` | `validate()` → `GET /` → `POST /` | **エラー時に「画面を出す」場合と「リダイレクトする」場合の違い**。認可コードに何を紐付けて保存している？ |
+| 6 | `src/views.tsx` | `LoginPage` の hidden input | GET で受けたパラメータが、POST にどうやって引き継がれている？ |
+| 7 | `src/routes/token.ts` | `switch (body.grant_type)` の各 case、`issueTokens()` | 3 つのグラントで**検証していることの違い**。code の `used` チェックはなぜ期限チェックより先？ |
+| 8 | `src/routes/resource.ts` | `requireScope()` ミドルウェア | 401 (`invalid_token`) と 403 (`insufficient_scope`) の使い分け |
+| 9 | `src/routes/tokens-management.ts` | `/introspect`, `/revoke` | revoke が存在しないトークンでも 200 を返すのはなぜ？ |
+
+### Step 4: 仕上げ
+
+| # | ファイル | 見るところ | 読みながら考えること |
+| --- | --- | --- | --- |
+| 10 | `src/index.ts` | `findFreePort()` と `await import('./app.js')` | なぜ app を**後から** import している？（ヒント: `ISSUER` が決まるタイミング） |
+| 11 | `test/oauth.test.ts` | 各 `it(...)` | テスト名が「仕様の一覧」になっている。気になる挙動はテストを 1 つ足して確かめてみる |
+
+### 読み方のコツ
+
+- **1 リクエストを追う**: たとえば `POST /token`（`grant_type=authorization_code`）を、`token.ts` → `oauth.ts` の `authenticateClient()` → `store.ts` の `authCodes` → `crypto.ts` の `verifyPkce()` と、呼ばれる順に追う
+- **わざと壊してみる**: `verifyPkce()` が常に `true` を返すように変えて `pnpm test` を実行し、どのテストが落ちるか見る。そのチェックが何を守っているかがわかる
+- **RFC と見比べる**: コメントに書いてある RFC 番号（6749, 7636, 7662, 7009 など）の該当箇所を読むと、なぜそう実装しているかがわかる
+
 ## 入っているセキュリティ上の工夫
 
 - 未登録の `redirect_uri` にはリダイレクトせずエラー画面を出す（オープンリダイレクタ対策）
