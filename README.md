@@ -72,19 +72,65 @@ sequenceDiagram
   Note over C: code_verifier をランダム生成<br/>code_challenge = BASE64URL(SHA256(verifier))
   C->>U: 認可サーバーへリダイレクト
   U->>AS: GET /authorize?response_type=code&client_id&redirect_uri<br/>&scope&state&code_challenge&code_challenge_method=S256
-  AS->>AS: client_id / redirect_uri / scope / PKCE を検証
+  AS->>AS: 【検証①】client_id / redirect_uri / scope / PKCE を検証
   AS-->>U: ログイン・同意画面
   U->>AS: POST /authorize (username, password, decision=approve)
-  AS->>AS: ユーザー認証 → 認可コードを発行<br/>(code_challenge と紐付けて保存)
+  AS->>AS: 【検証②】ユーザー認証 → 認可コードを発行<br/>(code_challenge と紐付けて保存)
   AS-->>U: 302 redirect_uri?code=xxx&state=abc&iss=...
   U->>C: code と state を届ける
   Note over C: state が送ったものと一致するか確認
   C->>AS: POST /token<br/>grant_type=authorization_code, code, redirect_uri,<br/>code_verifier + クライアント認証<br/>(confidential は client_id + secret / public は client_id のみ)
-  AS->>AS: SHA256(code_verifier) == code_challenge ?<br/>code は未使用・期限内？ redirect_uri 一致？
+  AS->>AS: 【検証③】クライアント認証 / code は未使用・期限内？<br/>redirect_uri 一致？ SHA256(code_verifier) == code_challenge ?
   AS-->>C: { access_token, refresh_token, expires_in, scope }
   C->>RS: GET /userinfo<br/>Authorization: Bearer access_token
   RS-->>C: { sub, name, email }
 ```
+
+### 認可サーバーが検証していること
+
+図の中で認可サーバーが検証しているのは 3 か所。それぞれ「誰が・何を」確かめているかが違う。
+
+| | タイミング | 確かめていること | コード |
+| --- | --- | --- | --- |
+| **検証①** | `GET /authorize`（ログイン画面を出す前） | **リクエストそのもの**が正しいか | `src/routes/authorize.tsx` の `validate()` |
+| **検証②** | `POST /authorize`（ログインボタンを押したとき） | **ユーザー本人**か、許可したか | `src/routes/authorize.tsx` |
+| **検証③** | `POST /token`（code をトークンに交換するとき） | **code を持ってきたのが、認可を求めた正規のクライアント**か | `src/routes/token.ts` |
+
+#### 検証①: リクエストは正しい？
+
+| 確認すること | なぜ | 失敗したら |
+| --- | --- | --- |
+| `client_id` が登録されているか | 知らないアプリには認可を出さない | エラー画面（リダイレクトしない） |
+| `redirect_uri` が登録済みのものと**完全一致**するか | 一致しないと、code を攻撃者のサイトへ送らされてしまう | エラー画面（リダイレクトしない） |
+| `response_type=code` か | このサーバーは認可コードフローだけ対応 | `redirect_uri?error=unsupported_response_type` |
+| そのクライアントが `authorization_code` を使ってよいか | クライアントごとに使えるフローを制限している | `redirect_uri?error=unauthorized_client` |
+| `code_challenge` があり、方式が `S256` か | PKCE を全クライアントで必須にしている | `redirect_uri?error=invalid_request` |
+| `scope` がクライアントに許可された範囲内か | 登録時に決めた以上の権限は求めさせない | `redirect_uri?error=invalid_scope` |
+
+> `client_id` と `redirect_uri` が怪しいときだけリダイレクトせずにエラー画面を出す理由は、後述の「エラーのとき」を参照。
+
+#### 検証②: ユーザー本人？ 許可した？
+
+| 確認すること | なぜ | 失敗したら |
+| --- | --- | --- |
+| 検証①をもう一度 | フォームの hidden 値は書き換えられるので、POST でも信用しない | 検証①と同じ |
+| ユーザーが「許可」を押したか | 拒否されたらトークンは出さない | `redirect_uri?error=access_denied` |
+| ユーザー名とパスワードが正しいか | 本人だけが自分のデータへのアクセスを許可できる | ログイン画面にエラーを表示 |
+
+全部通ったら認可コードを発行し、**誰が（ユーザー）・どのアプリに（client_id）・どこへ（redirect_uri）・何を（scope）許可したか**と `code_challenge` をコードに紐付けて保存する。検証③ではこの保存内容と突き合わせる。
+
+#### 検証③: code を持ってきたのは正規のクライアント？
+
+| 確認すること | なぜ | 失敗したら |
+| --- | --- | --- |
+| クライアント認証（confidential は secret、public は client_id のみ） | なりすましたクライアントを弾く | `401 invalid_client` |
+| code が存在し、**このクライアントに発行したもの**か | 他のアプリ宛ての code は使わせない | `invalid_grant` |
+| code がまだ使われていないか | 2 回目が来たら漏れた可能性がある → 発行済みトークンも全部失効 | `invalid_grant` |
+| code が期限内（5 分）か | 引換券は短命にして、漏れたときの被害を減らす | `invalid_grant` |
+| `redirect_uri` が検証①のときと同じか | 別の redirect_uri を使った code のすり替えを防ぐ | `invalid_grant` |
+| `SHA256(code_verifier)` が保存した `code_challenge` と一致するか（PKCE） | code だけ盗んだ攻撃者は verifier を知らないので交換できない | `invalid_grant` |
+
+> scope やユーザーは `/token` のリクエストからではなく、検証②で保存したものを使う。だから `/token` で権限を広げることはできない。
 
 ### なぜ code を一度挟むの？
 
