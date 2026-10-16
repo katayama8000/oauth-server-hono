@@ -79,7 +79,7 @@ sequenceDiagram
   AS-->>U: 302 redirect_uri?code=xxx&state=abc&iss=...
   U->>C: code と state を届ける
   Note over C: state が送ったものと一致するか確認
-  C->>AS: POST /token<br/>grant_type=authorization_code, code, redirect_uri,<br/>code_verifier + クライアント認証
+  C->>AS: POST /token<br/>grant_type=authorization_code, code, redirect_uri,<br/>code_verifier + クライアント認証<br/>(confidential は client_id + secret / public は client_id のみ)
   AS->>AS: SHA256(code_verifier) == code_challenge ?<br/>code は未使用・期限内？ redirect_uri 一致？
   AS-->>C: { access_token, refresh_token, expires_in, scope }
   C->>RS: GET /userinfo<br/>Authorization: Bearer access_token
@@ -89,7 +89,8 @@ sequenceDiagram
 ### なぜ code を一度挟むの？
 
 ブラウザのリダイレクト（URL）は履歴やログに残りやすい。そこにトークンそのものを乗せるのは危険なので、
-URL には短命な「引換券（code）」だけを乗せ、トークンはサーバー間の通信（`POST /token`）で受け取る。
+URL には短命な「引換券（code）」だけを乗せ、トークンは URL ではなく `POST /token` のレスポンスとして直接受け取る。
+confidential client ならクライアントのサーバーから、SPA などの public client ならブラウザ（アプリ）自身から `POST /token` を送る。
 
 ### PKCE はなにを防いでいる？
 
