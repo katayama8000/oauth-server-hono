@@ -238,6 +238,44 @@ sequenceDiagram
 - `client_secret_post`: ボディに `client_id` と `client_secret`
 - `none`: public クライアントはボディに `client_id` だけ
 
+### client_id と client_secret の使われ方
+
+| | client_id | client_secret |
+| --- | --- | --- |
+| 役割 | クライアントの**名前**（誰か） | クライアントの**パスワード**（本人証明） |
+| 秘密か | 秘密ではない。URL に載ってブラウザを通るので丸見えでよい | 秘密。クライアントのサーバーと認可サーバーだけが知っている |
+| どこに送るか | `/authorize`（ブラウザ経由のリダイレクト）と `/token` など | **サーバー間の通信だけ**（`/token`, `/introspect`, `/revoke`）。ブラウザ経由では絶対に送らない |
+
+エンドポイントごとの使われ方:
+
+| エンドポイント | client_id | client_secret | 認可サーバーがやること |
+| --- | --- | --- | --- |
+| `GET/POST /authorize` | 必須 | 送らない | `clients` に存在するか、`redirect_uri` が登録済みか、スコープが許可範囲内かを確認 |
+| `POST /token` | 必須 | confidential は必須 / public は送ってはいけない | `authenticateClient()` で認証。さらに認可コード・リフレッシュトークンが**同じ client_id に発行されたものか**を確認 |
+| `POST /token` (`client_credentials`) | 必須 | 必須 | secret を持たない public クライアントは `unauthorized_client` |
+| `POST /introspect` | 必須 | 必須 | public クライアントは 403 |
+| `POST /revoke` | 必須 | confidential は必須 | 自分（同じ client_id）に発行したトークンだけ失効させる |
+
+### secret はどこに保存する？
+
+**サーバー側にだけ置く。** 置き場所は 2 か所あって、それぞれ意味が違う。
+
+```mermaid
+flowchart LR
+  B["🌐 ブラウザ / スマホアプリ<br/>client_id だけ"]
+  CS["🖥️ クライアントのサーバー<br/>client_id + client_secret<br/>(環境変数・Secret Manager)"]
+  AS["🔐 認可サーバー<br/>client_id → client_secret<br/>(src/store.ts の clients)"]
+
+  B -- "/authorize<br/>client_id のみ" --> AS
+  CS -- "/token<br/>client_id + client_secret" --> AS
+```
+
+1. **認可サーバー側**（このリポジトリ）: 登録済みクライアントの台帳として `src/store.ts` の `clients` に保存し、`/token` などで送られてきた値と `safeEqual()`（タイミング攻撃対策の定数時間比較）で照合する。
+   - 練習用なので**平文・インメモリ**。本番ではパスワードと同じく**ハッシュ化して DB に保存**し、平文は発行時に一度だけ表示する（GitHub の OAuth App と同じ）。
+2. **クライアント側**: secret を使うのはクライアントの**バックエンド**だけ。環境変数や Secret Manager に入れ、git にコミットしない・フロントエンドのバンドルに含めない。
+
+SPA やスマホアプリはコードを配布する以上、中に secret を埋め込んでも抜き出せてしまう。だから **secret を持たない public クライアント**として登録し、secret の代わりに **PKCE** で「認可コードを要求した本人が交換しに来たか」を保証する（`public-client` がこれ）。
+
 ## 初期データ（`src/store.ts`）
 
 | 種類 | ID | シークレット / パスワード | 使えるスコープ |
