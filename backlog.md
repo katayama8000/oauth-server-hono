@@ -117,6 +117,78 @@ sequenceDiagram
 
 ---
 
+## なぜ state があるの？
+
+state は **CSRF 対策**のための値。ドキュメント上は任意だが、実際には必ず付ける。
+
+「このコールバック（`redirect_uri?code=...`）は、**このブラウザの、このユーザーが自分で始めた**連携の続きか？」をアプリが確かめるために使う。
+認可コード（`code`）だけでは、それが誰の連携で発行されたコードなのかアプリには分からない。
+
+### state がないと何が起きる？
+
+攻撃者が**自分の** Backlog アカウントで発行させた code を、被害者のブラウザに踏ませる攻撃ができてしまう。
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor E as 攻撃者
+  actor V as 被害者
+  participant App as アプリのサーバー
+  participant AS as Backlog 認可サーバー
+
+  E->>AS: 攻撃者自身のアカウントでログインして許可
+  AS-->>E: redirect_uri?code=攻撃者のコード
+  Note over E: コールバックを開かずに<br/>code を手元に止めておく
+  E->>V: 罠リンクを送る<br/>redirect_uri?code=攻撃者のコード
+  V->>App: 罠リンクを開く（ログイン中のアプリで）
+  App->>AS: POST /api/v2/oauth2/token (攻撃者のコード)
+  AS-->>App: 攻撃者の access_token
+  Note over App: 被害者のアカウントに<br/>攻撃者の Backlog が連携されてしまう
+  V->>App: いつも通りアプリを使う
+  App->>AS: 被害者が作った課題・ファイルを<br/>攻撃者の Backlog に書き込む
+```
+
+被害者は自分の Backlog と連携しているつもりで、**課題やファイルを攻撃者のスペースに送ってしまう**。
+被害者が操作したのは罠リンクを開いただけなので、気付きにくい。
+
+### state があると
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor V as 被害者
+  participant App as アプリのサーバー
+  participant AS as Backlog 認可サーバー
+
+  Note over V,App: 正規の流れ
+  V->>App: 「Backlog と連携」を押す
+  App->>App: state=abc を生成して<br/>被害者のセッションに保存
+  App-->>V: 302 → 認可エンドポイント (state=abc)
+  V->>AS: ログインして許可
+  AS-->>V: redirect_uri?code=xxx&state=abc
+  V->>App: コールバック (state=abc)
+  App->>App: セッションの state と一致 ✅ → トークン交換へ
+
+  Note over V,App: 罠リンクの場合
+  V->>App: redirect_uri?code=攻撃者のコード&state=???
+  App->>App: セッションに state がない / 一致しない ❌
+  App-->>V: エラー（トークン交換しない）
+```
+
+攻撃者は被害者のセッションに保存された state を知らないので、正しい state を付けた罠リンクを作れない。
+
+### state を使うときのポイント
+
+- **推測できないランダム値**にする（連番や固定値はダメ）
+- **ブラウザのセッション（Cookie）に紐付けて保存**し、コールバックで一致を確認する
+- **1 回使ったら捨てる**
+- 一致しなければ、**code をトークンと交換せずに**エラーにする
+
+> このリポジトリ（oauth-server-hono）では PKCE も必須にしている。PKCE でも「連携を始めた本人か」を確かめられるので、同じ攻撃を防げる。
+> Backlog のドキュメントには PKCE の記載がないので、**state が唯一の防御**になる。だから Backlog では state を必ず付ける。
+
+---
+
 ## アクセストークンの更新（Refresh Token）
 
 アクセストークンの有効期限は **1 時間**。切れたらリフレッシュトークンで取り直す。
